@@ -1,8 +1,5 @@
-from fastapi import FastAPI
+import os
 
-app = FastAPI()
+from app.api import create_app
 
-
-@app.get("/")
-def read_root():
-    return {"Hello": "World"}
+app = create_app(os.environ.get("OSS_ROOT", "./data"))
