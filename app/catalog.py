@@ -161,6 +161,22 @@ class Catalog:
             tmp_path.unlink(missing_ok=True)
             raise
 
+    def sweep_temp_files(self) -> int:
+        """删除 meta 树下全部未完成发布的 .meta-*.tmp 半成品，返回删除数。
+
+        这些文件只能来自“写临时文件成功、原子 rename 发布前”进程被强杀。
+        调用方必须已独占 gc 屏障（无在途变更），否则可能删掉别的进程
+        正在发布的临时文件——半成品永远以点号开头，不会被 all_keys 枚举到。
+        """
+        count = 0
+        if not self._meta.is_dir():
+            return count
+        for tmp in self._meta.glob(os.path.join("**", ".meta-*.tmp")):
+            if tmp.is_file() or tmp.is_symlink():
+                tmp.unlink()
+                count += 1
+        return count
+
     def all_referenced_digests(self) -> set[str]:
         """枚举全部版本记录引用的 blob digest（GC 的可达集合，含历史版本）。"""
         referenced: set[str] = set()
