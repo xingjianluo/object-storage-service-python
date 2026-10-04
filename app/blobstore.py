@@ -10,6 +10,9 @@
   因此 blobs/ 下永远不会出现半成品；
 - 相同 digest 的目标路径唯一，天然去重；重复写入不覆盖、不破坏已存在副本；
 - 已存在副本若意外损坏（哈希不符），会用新的正确副本原子替换修复。
+
+多进程：暂存文件名携带属主 PID（.put-<pid>-*），启动恢复只清理
+“属主已死亡 / 老版本遗留”的暂存，绝不动其它存活进程正在写的文件。
 """
 
 from __future__ import annotations
@@ -24,6 +27,7 @@ import hashlib
 
 from .errors import ChecksumMismatchError, ContentCorruptedError
 from .hashing import CHUNK_SIZE, is_valid_sha256_hex, sha256_chunks
+from .procutil import is_stale_staging
 
 
 @dataclass(frozen=True, slots=True)
@@ -74,7 +78,7 @@ class BlobStore:
         expected_digest 非空且与实际不符时抛 ChecksumMismatchError；
         任何中途失败都不会在 blobs/ 下留下文件。
         """
-        fd, tmp_name = tempfile.mkstemp(dir=self._tmp, prefix=".put-")
+        fd, tmp_name = tempfile.mkstemp(dir=self._tmp, prefix=f".put-{os.getpid()}-")
         tmp_path = Path(tmp_name)
         try:
             with os.fdopen(fd, "wb") as fh:
@@ -182,14 +186,21 @@ class BlobStore:
         path.unlink(missing_ok=True)
 
     def cleanup_staging(self) -> int:
-        """清空暂存目录，返回删除的暂存文件数（启动恢复用）。"""
+        """清理暂存目录中的残留，返回删除的文件数（启动恢复用）。
+
+        只删除“属主进程已死亡”或“老版本遗留（文件名无 PID）”的暂存文件；
+        其它存活进程正在写入的暂存文件保持不动（多进程安全）。
+        """
         count = 0
         if not self._tmp.is_dir():
             return count
         for entry in self._tmp.iterdir():
-            if entry.is_file() or entry.is_symlink():
-                entry.unlink()
-                count += 1
+            if not (entry.is_file() or entry.is_symlink()):
+                continue
+            if not is_stale_staging(entry.name, "put"):
+                continue
+            entry.unlink()
+            count += 1
         return count
 
 

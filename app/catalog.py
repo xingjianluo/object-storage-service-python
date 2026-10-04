@@ -9,6 +9,9 @@
 
 原子性：元数据以“写临时文件 + fsync + os.replace 原子改名”发布，
 崩溃后读到的要么是上一个完整版本，要么是新的完整版本，绝不会是半成品。
+
+多进程：临时文件命名携带属主 PID（.meta-<pid>-*.tmp），启动恢复只清理
+“属主已死亡 / 老版本遗留”的临时文件，绝不动其它存活进程的发布中文件。
 """
 
 from __future__ import annotations
@@ -21,6 +24,8 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import quote, unquote
+
+from .procutil import is_stale_staging
 
 SCHEMA_VERSION = 1
 
@@ -148,7 +153,9 @@ class Catalog:
         path = self._path_for(state.key)
         path.parent.mkdir(parents=True, exist_ok=True)
         payload = json.dumps(state.to_dict(), ensure_ascii=False, sort_keys=True)
-        fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=".meta-", suffix=".tmp")
+        fd, tmp_name = tempfile.mkstemp(
+            dir=path.parent, prefix=f".meta-{os.getpid()}-", suffix=".tmp"
+        )
         tmp_path = Path(tmp_name)
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as fh:
@@ -160,6 +167,27 @@ class Catalog:
         except BaseException:
             tmp_path.unlink(missing_ok=True)
             raise
+
+    def cleanup_staging(self) -> int:
+        """清理崩溃进程遗留的 meta 临时文件，返回删除数（启动恢复用）。
+
+        只删除“属主进程已死亡”或“老版本遗留（文件名无 PID）”的 .meta-*.tmp；
+        其它存活进程正在发布中的临时文件保持不动（多进程安全）。
+        """
+        count = 0
+        if not self._meta.is_dir():
+            return count
+        for shard in self._meta.iterdir():
+            if not shard.is_dir():
+                continue
+            for entry in shard.iterdir():
+                if not entry.name.startswith(".meta-") or entry.suffix != ".tmp":
+                    continue
+                if not is_stale_staging(entry.name[: -len(".tmp")], "meta"):
+                    continue
+                entry.unlink(missing_ok=True)
+                count += 1
+        return count
 
     def all_referenced_digests(self) -> set[str]:
         """枚举全部版本记录引用的 blob digest（GC 的可达集合，含历史版本）。"""
