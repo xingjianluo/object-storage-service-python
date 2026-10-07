@@ -190,7 +190,14 @@ class Catalog:
         return referenced
 
     def all_keys(self) -> list[str]:
-        """枚举所有拥有元数据文件的逻辑对象 key（含已删除）。"""
+        """枚举所有拥有元数据文件的逻辑对象 key（含已删除）。
+
+        点号开头的 key（如 .env、.config/settings.json）与普通 key 一视同仁：
+        其元数据文件同样以点号开头（quote 不编码 '.'），必须被枚举到，
+        否则 GC 的可达集合会漏掉它们引用的 blob，造成存活内容被误回收。
+        半成品临时文件固定为 .meta-*.tmp，靠后缀过滤即可排除，
+        绝不能按“点号开头”排除——那会误伤合法的点号开头对象。
+        """
         keys: list[str] = []
         if not self._meta.is_dir():
             return keys
@@ -198,7 +205,8 @@ class Catalog:
             if not shard.is_dir():
                 continue
             for entry in sorted(shard.iterdir()):
-                if entry.suffix != ".json" or entry.name.startswith("."):
+                if entry.suffix != ".json":
+                    # 只认已原子发布的 .json；.meta-*.tmp 半成品由此排除。
                     continue
                 keys.append(unquote(entry.stem))
         return keys
