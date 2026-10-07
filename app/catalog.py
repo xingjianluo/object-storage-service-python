@@ -166,7 +166,8 @@ class Catalog:
 
         这些文件只能来自“写临时文件成功、原子 rename 发布前”进程被强杀。
         调用方必须已独占 gc 屏障（无在途变更），否则可能删掉别的进程
-        正在发布的临时文件——半成品永远以点号开头，不会被 all_keys 枚举到。
+        正在发布的临时文件——半成品以 .meta- 开头、.tmp 结尾，
+        all_keys 只接受 .json 结尾的文件，因此绝不会把半成品当成对象。
         """
         count = 0
         if not self._meta.is_dir():
@@ -198,9 +199,19 @@ class Catalog:
             if not shard.is_dir():
                 continue
             for entry in sorted(shard.iterdir()):
-                if entry.suffix != ".json" or entry.name.startswith("."):
+                # 已发布的对象元数据一律以 .json 结尾；未发布半成品是
+                # .meta-*.tmp（以 .tmp 结尾），不会被误枚举。
+                # 注意：
+                # 1) 对象名允许点号开头（quote 不编码 '.'），其文件名形如
+                #    ".env.json"，绝不能按“文件名以点号开头”过滤——否则
+                #    .env/.gitignore/.config/settings.json 这类正常对象会从
+                #    可达集合中消失，GC 将误删仍被其历史版本引用的 blob；
+                # 2) 不能用 pathlib 的 suffix/stem：key 恰好为 "."/".." 时
+                #    文件名是 "..json"/"...json"，前导点不被视为扩展名，
+                #    这里统一按结尾固定 5 字符 ".json" 判定并按长度截取。
+                if not entry.is_file() or not entry.name.endswith(".json"):
                     continue
-                keys.append(unquote(entry.stem))
+                keys.append(unquote(entry.name[: -len(".json")]))
         return keys
 
 
